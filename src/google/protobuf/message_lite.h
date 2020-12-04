@@ -74,6 +74,12 @@ class ZeroCopyOutputStream;
 }  // namespace io
 namespace internal {
 
+// Tag type used to invoke the constinit constructor overload of some classes.
+// Such constructors are internal implementation details of the library.
+struct ConstantInitialized {
+  explicit ConstantInitialized() = default;
+};
+
 // See parse_context.h for explanation
 class ParseContext;
 
@@ -145,14 +151,25 @@ class ExplicitlyConstructed {
   } union_;
 };
 
+// We need a publicly accessible `value` object to allow constexpr
+// support in C++11.
+// A constexpr accessor does not work portably.
+union EmptyString {
+  constexpr EmptyString() : dummy{} {}
+  ~EmptyString() {}
+
+  // We need a dummy object for constant initialization.
+  std::false_type dummy;
+  std::string value;
+};
+
 // Default empty string object. Don't use this directly. Instead, call
 // GetEmptyString() to get the reference.
-PROTOBUF_EXPORT extern ExplicitlyConstructed<std::string>
-    fixed_address_empty_string;
+PROTOBUF_EXPORT extern EmptyString fixed_address_empty_string;
 
 
-PROTOBUF_EXPORT inline const std::string& GetEmptyStringAlreadyInited() {
-  return fixed_address_empty_string.get();
+PROTOBUF_EXPORT constexpr const std::string& GetEmptyStringAlreadyInited() {
+  return fixed_address_empty_string.value;
 }
 
 PROTOBUF_EXPORT size_t StringSpaceUsedExcludingSelfLong(const std::string& str);
@@ -182,9 +199,12 @@ PROTOBUF_EXPORT size_t StringSpaceUsedExcludingSelfLong(const std::string& str);
 // is best when you only have a small number of message types linked
 // into your binary, in which case the size of the protocol buffers
 // runtime itself is the biggest problem.
+//
+// Users must not derive from this class. Only the protocol compiler and
+// the internal library are allowed to create subclasses.
 class PROTOBUF_EXPORT MessageLite {
  public:
-  inline MessageLite() {}
+  constexpr MessageLite() = default;
   virtual ~MessageLite() = default;
 
   // Basic Operations ------------------------------------------------
@@ -264,28 +284,35 @@ class PROTOBUF_EXPORT MessageLite {
   // format.  A successful return does not indicate the entire input is
   // consumed, ensure you call ConsumedEntireMessage() to check that if
   // applicable.
-  bool ParseFromCodedStream(io::CodedInputStream* input);
+  PROTOBUF_ATTRIBUTE_REINITIALIZES bool ParseFromCodedStream(
+      io::CodedInputStream* input);
   // Like ParseFromCodedStream(), but accepts messages that are missing
   // required fields.
-  bool ParsePartialFromCodedStream(io::CodedInputStream* input);
+  PROTOBUF_ATTRIBUTE_REINITIALIZES bool ParsePartialFromCodedStream(
+      io::CodedInputStream* input);
   // Read a protocol buffer from the given zero-copy input stream.  If
   // successful, the entire input will be consumed.
-  bool ParseFromZeroCopyStream(io::ZeroCopyInputStream* input);
+  PROTOBUF_ATTRIBUTE_REINITIALIZES bool ParseFromZeroCopyStream(
+      io::ZeroCopyInputStream* input);
   // Like ParseFromZeroCopyStream(), but accepts messages that are missing
   // required fields.
-  bool ParsePartialFromZeroCopyStream(io::ZeroCopyInputStream* input);
+  PROTOBUF_ATTRIBUTE_REINITIALIZES bool ParsePartialFromZeroCopyStream(
+      io::ZeroCopyInputStream* input);
   // Parse a protocol buffer from a file descriptor.  If successful, the entire
   // input will be consumed.
-  bool ParseFromFileDescriptor(int file_descriptor);
+  PROTOBUF_ATTRIBUTE_REINITIALIZES bool ParseFromFileDescriptor(
+      int file_descriptor);
   // Like ParseFromFileDescriptor(), but accepts messages that are missing
   // required fields.
-  bool ParsePartialFromFileDescriptor(int file_descriptor);
+  PROTOBUF_ATTRIBUTE_REINITIALIZES bool ParsePartialFromFileDescriptor(
+      int file_descriptor);
   // Parse a protocol buffer from a C++ istream.  If successful, the entire
   // input will be consumed.
-  bool ParseFromIstream(std::istream* input);
+  PROTOBUF_ATTRIBUTE_REINITIALIZES bool ParseFromIstream(std::istream* input);
   // Like ParseFromIstream(), but accepts messages that are missing
   // required fields.
-  bool ParsePartialFromIstream(std::istream* input);
+  PROTOBUF_ATTRIBUTE_REINITIALIZES bool ParsePartialFromIstream(
+      std::istream* input);
   // Read a protocol buffer from the given zero-copy input stream, expecting
   // the message to be exactly "size" bytes long.  If successful, exactly
   // this many bytes will have been consumed from the input.
@@ -294,25 +321,29 @@ class PROTOBUF_EXPORT MessageLite {
   // Like ParseFromBoundedZeroCopyStream(), but accepts messages that are
   // missing required fields.
   bool MergeFromBoundedZeroCopyStream(io::ZeroCopyInputStream* input, int size);
-  bool ParseFromBoundedZeroCopyStream(io::ZeroCopyInputStream* input, int size);
+  PROTOBUF_ATTRIBUTE_REINITIALIZES bool ParseFromBoundedZeroCopyStream(
+      io::ZeroCopyInputStream* input, int size);
   // Like ParseFromBoundedZeroCopyStream(), but accepts messages that are
   // missing required fields.
-  bool ParsePartialFromBoundedZeroCopyStream(io::ZeroCopyInputStream* input,
-                                             int size);
+  PROTOBUF_ATTRIBUTE_REINITIALIZES bool ParsePartialFromBoundedZeroCopyStream(
+      io::ZeroCopyInputStream* input, int size);
   // Parses a protocol buffer contained in a string. Returns true on success.
   // This function takes a string in the (non-human-readable) binary wire
   // format, matching the encoding output by MessageLite::SerializeToString().
   // If you'd like to convert a human-readable string into a protocol buffer
   // object, see google::protobuf::TextFormat::ParseFromString().
-  bool ParseFromString(const std::string& data);
+  PROTOBUF_ATTRIBUTE_REINITIALIZES bool ParseFromString(ConstStringParam data);
   // Like ParseFromString(), but accepts messages that are missing
   // required fields.
-  bool ParsePartialFromString(const std::string& data);
+  PROTOBUF_ATTRIBUTE_REINITIALIZES bool ParsePartialFromString(
+      ConstStringParam data);
   // Parse a protocol buffer contained in an array of bytes.
-  bool ParseFromArray(const void* data, int size);
+  PROTOBUF_ATTRIBUTE_REINITIALIZES bool ParseFromArray(const void* data,
+                                                       int size);
   // Like ParseFromArray(), but accepts messages that are missing
   // required fields.
-  bool ParsePartialFromArray(const void* data, int size);
+  PROTOBUF_ATTRIBUTE_REINITIALIZES bool ParsePartialFromArray(const void* data,
+                                                              int size);
 
 
   // Reads a protocol buffer from the stream and merges it into this
@@ -336,7 +367,7 @@ class PROTOBUF_EXPORT MessageLite {
   bool MergePartialFromCodedStream(io::CodedInputStream* input);
 
   // Merge a protocol buffer contained in a string.
-  bool MergeFromString(const std::string& data);
+  bool MergeFromString(ConstStringParam data);
 
 
   // Serialization ---------------------------------------------------

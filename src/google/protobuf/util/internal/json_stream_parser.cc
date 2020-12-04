@@ -82,8 +82,8 @@ inline bool IsAlphanumeric(char c) {
 
 // Indicates a character may not be part of an unquoted key.
 inline bool IsKeySeparator(char c) {
-  return (ascii_isspace(c) || c == '"' || c == '\'' || c == '{' || c == '}' ||
-          c == '[' || c == ']' || c == ':' || c == ',');
+  return (ascii_isspace(c) || c == '"' || c == '\'' || c == '{' ||
+          c == '}' || c == '[' || c == ']' || c == ':' || c == ',');
 }
 
 inline void ReplaceInvalidCodePoints(StringPiece str,
@@ -853,7 +853,7 @@ util::Status JsonStreamParser::ReportUnknown(StringPiece message) {
 util::Status JsonStreamParser::IncrementRecursionDepth(
     StringPiece key) const {
   if (++recursion_depth_ > max_recursion_depth_) {
-    return Status(
+    return util::Status(
         util::error::INVALID_ARGUMENT,
         StrCat("Message too deep. Max recursion depth reached for key '",
                      key, "'"));

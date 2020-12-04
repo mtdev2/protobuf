@@ -67,7 +67,7 @@ namespace internal {
 static size_t MapKeyDataOnlyByteSize(const FieldDescriptor* field,
                                      const MapKey& value);
 static size_t MapValueRefDataOnlyByteSize(const FieldDescriptor* field,
-                                          const MapValueRef& value);
+                                          const MapValueConstRef& value);
 
 // ===================================================================
 
@@ -661,6 +661,7 @@ struct WireFormat::MessageSetParser {
     auto metadata = reflection->MutableInternalMetadata(msg);
     std::string payload;
     uint32 type_id = 0;
+    bool payload_read = false;
     while (!ctx->Done(&ptr)) {
       // We use 64 bit tags in order to allow typeid's that span the whole
       // range of 32 bit numbers.
@@ -670,7 +671,7 @@ struct WireFormat::MessageSetParser {
         ptr = ParseBigVarint(ptr, &tmp);
         GOOGLE_PROTOBUF_PARSER_ASSERT(ptr);
         type_id = tmp;
-        if (!payload.empty()) {
+        if (payload_read) {
           const FieldDescriptor* field;
           if (ctx->data().pool == nullptr) {
             field = reflection->FindKnownExtensionByNumber(type_id);
@@ -706,6 +707,7 @@ struct WireFormat::MessageSetParser {
           GOOGLE_PROTOBUF_PARSER_ASSERT(ptr);
           ptr = ctx->ReadString(ptr, size, &payload);
           GOOGLE_PROTOBUF_PARSER_ASSERT(ptr);
+          payload_read = true;
         } else {
           // We're now parsing the payload
           const FieldDescriptor* field = nullptr;
@@ -1097,7 +1099,7 @@ static uint8* SerializeMapKeyWithCachedSizes(const FieldDescriptor* field,
 }
 
 static uint8* SerializeMapValueRefWithCachedSizes(
-    const FieldDescriptor* field, const MapValueRef& value, uint8* target,
+    const FieldDescriptor* field, const MapValueConstRef& value, uint8* target,
     io::EpsCopyOutputStream* stream) {
   target = stream->EnsureSpace(target);
   switch (field->type()) {
@@ -1182,7 +1184,8 @@ class MapKeySorter {
 
 static uint8* InternalSerializeMapEntry(const FieldDescriptor* field,
                                         const MapKey& key,
-                                        const MapValueRef& value, uint8* target,
+                                        const MapValueConstRef& value,
+                                        uint8* target,
                                         io::EpsCopyOutputStream* stream) {
   const FieldDescriptor* key_field = field->message_type()->field(0);
   const FieldDescriptor* value_field = field->message_type()->field(1);
@@ -1235,9 +1238,8 @@ uint8* WireFormat::InternalSerializeField(const FieldDescriptor* field,
             MapKeySorter::SortKey(message, message_reflection, field);
         for (std::vector<MapKey>::iterator it = sorted_key_list.begin();
              it != sorted_key_list.end(); ++it) {
-          MapValueRef map_value;
-          message_reflection->InsertOrLookupMapValue(
-              const_cast<Message*>(&message), field, *it, &map_value);
+          MapValueConstRef map_value;
+          message_reflection->LookupMapValue(message, field, *it, &map_value);
           target =
               InternalSerializeMapEntry(field, *it, map_value, target, stream);
         }
@@ -1460,8 +1462,8 @@ size_t WireFormat::ByteSize(const Message& message) {
     message_reflection->ListFields(message, &fields);
   }
 
-  for (int i = 0; i < fields.size(); i++) {
-    our_size += FieldByteSize(fields[i], message);
+  for (const FieldDescriptor* field : fields) {
+    our_size += FieldByteSize(field, message);
   }
 
   if (descriptor->options().message_set_wire_format()) {
@@ -1564,7 +1566,7 @@ static size_t MapKeyDataOnlyByteSize(const FieldDescriptor* field,
 }
 
 static size_t MapValueRefDataOnlyByteSize(const FieldDescriptor* field,
-                                          const MapValueRef& value) {
+                                          const MapValueConstRef& value) {
   switch (field->type()) {
     case FieldDescriptor::TYPE_GROUP:
       GOOGLE_LOG(FATAL) << "Unsupported";
@@ -1643,7 +1645,7 @@ size_t WireFormat::FieldDataOnlyByteSize(const FieldDescriptor* field,
 #define HANDLE_TYPE(TYPE, TYPE_METHOD, CPPTYPE_METHOD)                      \
   case FieldDescriptor::TYPE_##TYPE:                                        \
     if (field->is_repeated()) {                                             \
-      for (int j = 0; j < count; j++) {                                     \
+      for (size_t j = 0; j < count; j++) {                                  \
         data_size += WireFormatLite::TYPE_METHOD##Size(                     \
             message_reflection->GetRepeated##CPPTYPE_METHOD(message, field, \
                                                             j));            \
@@ -1683,7 +1685,7 @@ size_t WireFormat::FieldDataOnlyByteSize(const FieldDescriptor* field,
 
     case FieldDescriptor::TYPE_ENUM: {
       if (field->is_repeated()) {
-        for (int j = 0; j < count; j++) {
+        for (size_t j = 0; j < count; j++) {
           data_size += WireFormatLite::EnumSize(
               message_reflection->GetRepeatedEnum(message, field, j)->number());
         }
@@ -1698,7 +1700,7 @@ size_t WireFormat::FieldDataOnlyByteSize(const FieldDescriptor* field,
     // instead of copying.
     case FieldDescriptor::TYPE_STRING:
     case FieldDescriptor::TYPE_BYTES: {
-      for (int j = 0; j < count; j++) {
+      for (size_t j = 0; j < count; j++) {
         std::string scratch;
         const std::string& value =
             field->is_repeated()
@@ -1746,3 +1748,5 @@ size_t ComputeUnknownFieldsSize(const InternalMetadata& metadata,
 }  // namespace internal
 }  // namespace protobuf
 }  // namespace google
+
+#include <google/protobuf/port_undef.inc>

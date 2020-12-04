@@ -40,6 +40,7 @@
 #include <google/protobuf/text_format.h>
 #include <google/protobuf/testing/googletest.h>
 #include <gtest/gtest.h>
+#include <google/protobuf/stubs/strutil.h>
 
 using proto3_arena_unittest::TestAllTypes;
 
@@ -137,7 +138,7 @@ TEST(Proto3ArenaTest, UnknownFields) {
   // We can modify this UnknownFieldSet.
   unknown_fields->AddVarint(1, 2);
   // And the unknown fields should be changed.
-  ASSERT_NE(original.ByteSize(), arena_message->ByteSize());
+  ASSERT_NE(original.ByteSizeLong(), arena_message->ByteSizeLong());
   ASSERT_FALSE(
       arena_message->GetReflection()->GetUnknownFields(*arena_message).empty());
 }
@@ -202,7 +203,7 @@ TEST(Proto3OptionalTest, OptionalFields) {
   msg.set_optional_int32(0);
   EXPECT_TRUE(msg.has_optional_int32());
 
-  string serialized;
+  std::string serialized;
   msg.SerializeToString(&serialized);
   EXPECT_GT(serialized.size(), 0);
 
@@ -217,9 +218,15 @@ TEST(Proto3OptionalTest, OptionalFieldDescriptor) {
 
   for (int i = 0; i < d->field_count(); i++) {
     const FieldDescriptor* f = d->field(i);
-    EXPECT_TRUE(f->has_optional_keyword()) << f->full_name();
-    EXPECT_TRUE(f->has_presence()) << f->full_name();
-    EXPECT_TRUE(f->containing_oneof()) << f->full_name();
+    if (HasPrefixString(f->name(), "singular")) {
+      EXPECT_FALSE(f->has_optional_keyword()) << f->full_name();
+      EXPECT_FALSE(f->has_presence()) << f->full_name();
+      EXPECT_FALSE(f->containing_oneof()) << f->full_name();
+    } else {
+      EXPECT_TRUE(f->has_optional_keyword()) << f->full_name();
+      EXPECT_TRUE(f->has_presence()) << f->full_name();
+      EXPECT_TRUE(f->containing_oneof()) << f->full_name();
+    }
   }
 }
 
@@ -229,7 +236,7 @@ TEST(Proto3OptionalTest, OptionalField) {
   msg.set_optional_int32(0);
   EXPECT_TRUE(msg.has_optional_int32());
 
-  string serialized;
+  std::string serialized;
   msg.SerializeToString(&serialized);
   EXPECT_GT(serialized.size(), 0);
 
@@ -284,6 +291,47 @@ TEST(Proto3OptionalTest, OptionalFieldReflection) {
   EXPECT_FALSE(r->HasField(msg, f));
   EXPECT_FALSE(r->HasOneof(msg, o));
   EXPECT_TRUE(r->GetOneofFieldDescriptor(msg, o) == nullptr);
+}
+
+// It's a regression test for b/160665543.
+TEST(Proto3OptionalTest, ClearNonOptionalMessageField) {
+  protobuf_unittest::TestProto3OptionalMessage msg;
+  msg.mutable_nested_message();
+  const google::protobuf::Descriptor* d = msg.GetDescriptor();
+  const google::protobuf::Reflection* r = msg.GetReflection();
+  const google::protobuf::FieldDescriptor* f = d->FindFieldByName("nested_message");
+  r->ClearField(&msg, f);
+}
+
+TEST(Proto3OptionalTest, ClearOptionalMessageField) {
+  protobuf_unittest::TestProto3OptionalMessage msg;
+  msg.mutable_optional_nested_message();
+  const google::protobuf::Descriptor* d = msg.GetDescriptor();
+  const google::protobuf::Reflection* r = msg.GetReflection();
+  const google::protobuf::FieldDescriptor* f =
+      d->FindFieldByName("optional_nested_message");
+  r->ClearField(&msg, f);
+}
+
+TEST(Proto3OptionalTest, SwapNonOptionalMessageField) {
+  protobuf_unittest::TestProto3OptionalMessage msg1;
+  protobuf_unittest::TestProto3OptionalMessage msg2;
+  msg1.mutable_nested_message();
+  const google::protobuf::Descriptor* d = msg1.GetDescriptor();
+  const google::protobuf::Reflection* r = msg1.GetReflection();
+  const google::protobuf::FieldDescriptor* f = d->FindFieldByName("nested_message");
+  r->SwapFields(&msg1, &msg2, {f});
+}
+
+TEST(Proto3OptionalTest, SwapOptionalMessageField) {
+  protobuf_unittest::TestProto3OptionalMessage msg1;
+  protobuf_unittest::TestProto3OptionalMessage msg2;
+  msg1.mutable_optional_nested_message();
+  const google::protobuf::Descriptor* d = msg1.GetDescriptor();
+  const google::protobuf::Reflection* r = msg1.GetReflection();
+  const google::protobuf::FieldDescriptor* f =
+      d->FindFieldByName("optional_nested_message");
+  r->SwapFields(&msg1, &msg2, {f});
 }
 
 void SetAllFieldsZero(protobuf_unittest::TestProto3Optional* msg) {

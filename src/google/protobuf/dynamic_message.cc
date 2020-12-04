@@ -292,6 +292,13 @@ class DynamicMessage : public Message {
   ~DynamicMessage();
 
   // Called on the prototype after construction to initialize message fields.
+  // Cross linking the default instances allows for fast reflection access of
+  // unset message fields. Without it we would have to go to the MessageFactory
+  // to get the prototype, which is a much more expensive operation.
+  //
+  // Generated messages do not cross-link to avoid dynamic initialization of the
+  // global instances.
+  // Instead, they keep the default instances in the FieldDescriptor objects.
   void CrossLinkPrototypes();
 
   // implements Message ----------------------------------------------
@@ -336,26 +343,24 @@ class DynamicMessage : public Message {
   }
 
   const TypeInfo* type_info_;
-  Arena* const arena_;
   mutable std::atomic<int> cached_byte_size_;
   GOOGLE_DISALLOW_EVIL_CONSTRUCTORS(DynamicMessage);
 };
 
 DynamicMessage::DynamicMessage(const TypeInfo* type_info)
-    : type_info_(type_info), arena_(NULL), cached_byte_size_(0) {
+    : type_info_(type_info), cached_byte_size_(0) {
   SharedCtor(true);
 }
 
 DynamicMessage::DynamicMessage(const TypeInfo* type_info, Arena* arena)
     : Message(arena),
       type_info_(type_info),
-      arena_(arena),
       cached_byte_size_(0) {
   SharedCtor(true);
 }
 
 DynamicMessage::DynamicMessage(TypeInfo* type_info, bool lock_factory)
-    : type_info_(type_info), arena_(NULL), cached_byte_size_(0) {
+    : type_info_(type_info), cached_byte_size_(0) {
   // The prototype in type_info has to be set before creating the prototype
   // instance on memory. e.g., message Foo { map<int32, Foo> a = 1; }. When
   // creating prototype for Foo, prototype of the map entry will also be
@@ -386,7 +391,8 @@ void DynamicMessage::SharedCtor(bool lock_factory) {
   }
 
   if (type_info_->extensions_offset != -1) {
-    new (OffsetToPointer(type_info_->extensions_offset)) ExtensionSet(arena_);
+    new (OffsetToPointer(type_info_->extensions_offset))
+        ExtensionSet(GetArena());
   }
   for (int i = 0; i < descriptor->field_count(); i++) {
     const FieldDescriptor* field = descriptor->field(i);
@@ -400,7 +406,7 @@ void DynamicMessage::SharedCtor(bool lock_factory) {
     if (!field->is_repeated()) {                           \
       new (field_ptr) TYPE(field->default_value_##TYPE()); \
     } else {                                               \
-      new (field_ptr) RepeatedField<TYPE>(arena_);         \
+      new (field_ptr) RepeatedField<TYPE>(GetArena());     \
     }                                                      \
     break;
 
@@ -417,7 +423,7 @@ void DynamicMessage::SharedCtor(bool lock_factory) {
         if (!field->is_repeated()) {
           new (field_ptr) int(field->default_value_enum()->number());
         } else {
-          new (field_ptr) RepeatedField<int>(arena_);
+          new (field_ptr) RepeatedField<int>(GetArena());
         }
         break;
 
@@ -426,19 +432,14 @@ void DynamicMessage::SharedCtor(bool lock_factory) {
           default:  // TODO(kenton):  Support other string reps.
           case FieldOptions::STRING:
             if (!field->is_repeated()) {
-              const std::string* default_value;
-              if (is_prototype()) {
-                default_value = &field->default_value_string();
-              } else {
-                default_value = &(reinterpret_cast<const ArenaStringPtr*>(
-                                      type_info_->prototype->OffsetToPointer(
-                                          type_info_->offsets[i]))
-                                      ->Get());
-              }
+              const std::string* default_value =
+                  field->default_value_string().empty()
+                      ? &internal::GetEmptyStringAlreadyInited()
+                      : nullptr;
               ArenaStringPtr* asp = new (field_ptr) ArenaStringPtr();
               asp->UnsafeSetDefault(default_value);
             } else {
-              new (field_ptr) RepeatedPtrField<std::string>(arena_);
+              new (field_ptr) RepeatedPtrField<std::string>(GetArena());
             }
             break;
         }
@@ -453,20 +454,20 @@ void DynamicMessage::SharedCtor(bool lock_factory) {
             // when the constructor is called inside GetPrototype(), in which
             // case we have already locked the factory.
             if (lock_factory) {
-              if (arena_ != NULL) {
+              if (GetArena() != nullptr) {
                 new (field_ptr) DynamicMapField(
                     type_info_->factory->GetPrototype(field->message_type()),
-                    arena_);
+                    GetArena());
               } else {
                 new (field_ptr) DynamicMapField(
                     type_info_->factory->GetPrototype(field->message_type()));
               }
             } else {
-              if (arena_ != NULL) {
+              if (GetArena() != nullptr) {
                 new (field_ptr)
                     DynamicMapField(type_info_->factory->GetPrototypeNoLock(
                                         field->message_type()),
-                                    arena_);
+                                    GetArena());
               } else {
                 new (field_ptr)
                     DynamicMapField(type_info_->factory->GetPrototypeNoLock(
@@ -474,7 +475,7 @@ void DynamicMessage::SharedCtor(bool lock_factory) {
               }
             }
           } else {
-            new (field_ptr) RepeatedPtrField<Message>(arena_);
+            new (field_ptr) RepeatedPtrField<Message>(GetArena());
           }
         }
         break;
@@ -508,7 +509,7 @@ DynamicMessage::~DynamicMessage() {
       void* field_ptr =
           OffsetToPointer(type_info_->oneof_case_offset +
                           sizeof(uint32) * field->containing_oneof()->index());
-      if (*(reinterpret_cast<const uint32*>(field_ptr)) == field->number()) {
+      if (*(reinterpret_cast<const int32*>(field_ptr)) == field->number()) {
         field_ptr = OffsetToPointer(
             type_info_->offsets[descriptor->field_count() +
                                 field->containing_oneof()->index()]);
@@ -517,10 +518,10 @@ DynamicMessage::~DynamicMessage() {
             default:
             case FieldOptions::STRING: {
               const std::string* default_value =
-                  &(reinterpret_cast<const ArenaStringPtr*>(
-                        reinterpret_cast<const uint8*>(type_info_->prototype) +
-                        type_info_->offsets[i])
-                        ->Get());
+                  reinterpret_cast<const ArenaStringPtr*>(
+                      reinterpret_cast<const uint8*>(type_info_->prototype) +
+                      type_info_->offsets[i])
+                      ->GetPointer();
               reinterpret_cast<ArenaStringPtr*>(field_ptr)->Destroy(
                   default_value, NULL);
               break;
@@ -577,10 +578,10 @@ DynamicMessage::~DynamicMessage() {
         default:  // TODO(kenton):  Support other string reps.
         case FieldOptions::STRING: {
           const std::string* default_value =
-              &(reinterpret_cast<const ArenaStringPtr*>(
-                    type_info_->prototype->OffsetToPointer(
-                        type_info_->offsets[i]))
-                    ->Get());
+              reinterpret_cast<const ArenaStringPtr*>(
+                  type_info_->prototype->OffsetToPointer(
+                      type_info_->offsets[i]))
+                  ->GetPointer();
           reinterpret_cast<ArenaStringPtr*>(field_ptr)->Destroy(default_value,
                                                                 NULL);
           break;

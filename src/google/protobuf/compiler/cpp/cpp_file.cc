@@ -429,6 +429,12 @@ void FileGenerator::GenerateSourceIncludes(io::Printer* printer) {
 
   format("// @@protoc_insertion_point(includes)\n");
   IncludeFile("net/proto2/public/port_def.inc", printer);
+
+  // For MSVC builds, we use #pragma init_seg to move the initialization of our
+  // libraries to happen before the user code.
+  // This worksaround the fact that MSVC does not do constant initializers when
+  // required by the standard.
+  format("\nPROTOBUF_PRAGMA_INIT_SEG\n");
 }
 
 void FileGenerator::GenerateSourceDefaultInstance(int idx,
@@ -441,12 +447,11 @@ void FileGenerator::GenerateSourceDefaultInstance(int idx,
       "  ::$proto_ns$::internal::ExplicitlyConstructed<$2$> _instance;\n",
       DefaultInstanceType(generator->descriptor_, options_),
       generator->classname_);
-  format.Indent();
-  generator->GenerateExtraDefaultFields(printer);
-  format.Outdent();
   format("} $1$;\n", DefaultInstanceName(generator->descriptor_, options_));
+
   if (options_.lite_implicit_weak_fields) {
-    format("$1$DefaultTypeInternal* $2$ = &$3$;\n", generator->classname_,
+    format("$1$* $2$ = &$3$;\n",
+           DefaultInstanceType(generator->descriptor_, options_),
            DefaultInstancePtr(generator->descriptor_, options_),
            DefaultInstanceName(generator->descriptor_, options_));
   }
@@ -917,8 +922,9 @@ void FileGenerator::GenerateReflectionInitializationCode(io::Printer* printer) {
   if (file_->name() != "net/proto2/proto/descriptor.proto") {
     format(
         "// Force running AddDescriptors() at dynamic initialization time.\n"
-        "static bool $1$ = (static_cast<void>("
-        "::$proto_ns$::internal::AddDescriptors(&$desc_table$)), true);\n",
+        "PROTOBUF_ATTRIBUTE_INIT_PRIORITY "
+        "static ::$proto_ns$::internal::AddDescriptorsRunner "
+        "$1$(&$desc_table$);\n",
         UniqueName("dynamic_init_dummy", file_, options_));
   }
 }
@@ -942,9 +948,6 @@ void FileGenerator::GenerateInitForSCC(const SCC* scc,
     if (scc_analyzer_.GetSCC(message_generators_[i]->descriptor_) != scc) {
       continue;
     }
-    // TODO(gerbens) This requires this function to be friend. Remove
-    // the need for this.
-    message_generators_[i]->GenerateFieldDefaultInstances(printer);
     format(
         "{\n"
         "  void* ptr = &$1$;\n"
@@ -960,17 +963,6 @@ void FileGenerator::GenerateInitForSCC(const SCC* scc,
           "\n");
     }
     format("}\n");
-  }
-
-  // TODO(gerbens) make default instances be the same as normal instances.
-  // Default instances differ from normal instances because they have cross
-  // linked message fields.
-  for (int i = 0; i < message_generators_.size(); i++) {
-    if (scc_analyzer_.GetSCC(message_generators_[i]->descriptor_) != scc) {
-      continue;
-    }
-    format("$1$::InitAsDefaultInstance();\n",
-           QualifiedClassName(message_generators_[i]->descriptor_, options_));
   }
   format.Outdent();
   format("}\n\n");
@@ -1046,7 +1038,7 @@ void FileGenerator::GenerateTables(io::Printer* printer) {
         "};\n"
         "\n"
         "PROTOBUF_CONSTEXPR_VAR "
-        "::$proto_ns$::internal::AuxillaryParseTableField\n"
+        "::$proto_ns$::internal::AuxiliaryParseTableField\n"
         "    const $tablename$::aux[] "
         "PROTOBUF_SECTION_VARIABLE(protodesc_cold) = {\n");
     format.Indent();
@@ -1060,7 +1052,7 @@ void FileGenerator::GenerateTables(io::Printer* printer) {
     }
 
     if (count == 0) {
-      format("::$proto_ns$::internal::AuxillaryParseTableField(),\n");
+      format("::$proto_ns$::internal::AuxiliaryParseTableField(),\n");
     }
 
     format.Outdent();
@@ -1212,7 +1204,6 @@ void FileGenerator::GenerateForwardDeclarations(io::Printer* printer) {
       decls[Namespace(d, options_)].AddEnum(d);
   }
 
-
   {
     NamespaceOpener ns(format);
     for (const auto& pair : decls) {
@@ -1295,7 +1286,6 @@ void FileGenerator::GenerateLibraryIncludes(io::Printer* printer) {
   IncludeFile("net/proto2/public/arenastring.h", printer);
   IncludeFile("net/proto2/public/generated_message_table_driven.h", printer);
   IncludeFile("net/proto2/public/generated_message_util.h", printer);
-  IncludeFile("net/proto2/public/inlined_string_field.h", printer);
   IncludeFile("net/proto2/public/metadata_lite.h", printer);
 
   if (HasDescriptorMethods(file_, options_)) {
@@ -1406,7 +1396,7 @@ void FileGenerator::GenerateGlobalStateFunctionDeclarations(
       // for table driven code.
       "  static const ::$proto_ns$::internal::ParseTableField entries[]\n"
       "    PROTOBUF_SECTION_VARIABLE(protodesc_cold);\n"
-      "  static const ::$proto_ns$::internal::AuxillaryParseTableField aux[]\n"
+      "  static const ::$proto_ns$::internal::AuxiliaryParseTableField aux[]\n"
       "    PROTOBUF_SECTION_VARIABLE(protodesc_cold);\n"
       "  static const ::$proto_ns$::internal::ParseTable schema[$1$]\n"
       "    PROTOBUF_SECTION_VARIABLE(protodesc_cold);\n"
